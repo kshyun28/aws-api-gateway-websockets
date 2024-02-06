@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  sam-app
+Transform:
+  - AWS::Serverless-2016-10-31
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Architectures:
+      - arm64
+    Timeout: 30
+    MemorySize: 128
+    Runtime: nodejs20.x
+    LoggingConfig:
+      LogFormat: JSON
+    Environment:
+      Variables:
+        WEBSOCKET_CONNECTIONS_TABLE: !Ref WebsocketConnectionsTable
+
+# Resources declares the AWS resources that you want to include in the stack
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resources-section-structure.html
+Resources:
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigatewayv2-api.html
+  WebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: MyWebSocket
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: $request.body.action
+    Connectors:
+      LambdaConnector:
+        Properties:
+          Destination:
+            - Id: ConnectFunction
+            - Id: DisconnectFunction
+          Permissions:
+            - Write
+
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigatewayv2-deployment.html
+  WebSocketApiDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    Properties:
+      ApiId: !Ref WebSocketApi
+    DependsOn:
+      - ConnectRoute
+      - DisconnectRoute
+
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigatewayv2-stage.html
+  WebSocketApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WebSocketApi
+      DeploymentId: !Ref WebSocketApiDeployment
+      StageName: Prod
+
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigatewayv2-route.html
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+      Target: !Sub integrations/${ConnectIntegration}
+
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigatewayv2-integration.html
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConnectFunction.Arn}/invocations
+
+  # https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html
+  ConnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-Connect
+      Description: Connect to Websocket API.
+      CodeUri: ./src/handlers/connect
+      Handler: index.handler
+    Connectors:
+      WebsocketConnectionsTableConnector:
+        Properties:
+          Destination:
+            Id: WebsocketConnectionsTable
+          Permissions:
+            - Write
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      Target: !Sub integrations/${DisconnectIntegration}
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DisconnectFunction.Arn}/invocations
+
+  DisconnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-Disconnect
+      Description: Disconnect from Websocket API.
+      CodeUri: ./src/handlers/disconnect
+      Handler: index.handler
+    Connectors:
+      WebsocketConnectionsTableConnector:
+        Properties:
+          Destination:
+            Id: WebsocketConnectionsTable
+          Permissions:
+            - Write
+
+  SendMessageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-SendMessage
+      Description: Send message to subscribed connections.
+      CodeUri: ./src/handlers/sendMessage
+      Handler: index.handler
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /
+            Method: POST
+      Environment:
+        Variables:
+          WEBSOCKET_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: "*"
+              Resource: !Sub arn:aws:execute-api:*:*:${WebSocketApi}/*
+    Connectors:
+      WebsocketConnectionsTableConnector:
+        Properties:
+          Destination:
+            Id: WebsocketConnectionsTable
+          Permissions:
+            - Read
+
+  # Simple syntax to create a DynamoDB table with a single attribute primary key, more in
+  # https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlesssimpletable
+  WebsocketConnectionsTable:
+    Type: AWS::Serverless::SimpleTable
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      TableName: !Sub ${AWS::StackName}-WebsocketsConnections
+      PrimaryKey:
+        Name: connectionId
+        Type: String
+
+Outputs:
+  WebSocketEndpoint:
+    Description: API Gateway WebSockets endpoint URL for Prod stage
+    Value: !Sub "wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for Prod stage
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"

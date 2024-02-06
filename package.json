@@ -1,0 +1,12 @@
+{
+  "name": "aws-api-gateway-websockets",
+  "version": "1.0.0",
+  "description": "AWS API Gateway WebSockets example using AWS SAM.",
+  "scripts": {
+    "build": "sam build",
+    "deploy": "sam deploy",
+    "sync": "sam sync --stack-name api-gateway-websockets --no-dependency-layer"
+  },
+  "author": "Jasper Gabriel",
+  "license": "MIT"
+}
